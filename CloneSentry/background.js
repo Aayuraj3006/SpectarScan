@@ -1,19 +1,13 @@
 const API_URL = "https://spectarscan.onrender.com/predict";
-const API_KEY = "YOUR_BACKEND_TOKEN"; // 🔑 add your token
+const API_KEY = "b5BbVpPoOv3loryfGnwNNudc0jKTz_S5nxmx3nZfWz4";
 
-// Track scans per tab
 const scannedTabs = {};
 
-console.log("SpecterScan running");
-
-
-// ===== AUTO SCAN =====
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
     if (changeInfo.status !== "complete") return;
     if (!tab.url || !tab.url.startsWith("http")) return;
 
-    // Avoid duplicate per tab
     if (scannedTabs[tabId] === tab.url) return;
     scannedTabs[tabId] = tab.url;
 
@@ -24,9 +18,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
                 "Content-Type": "application/json",
                 "x-api-key": API_KEY
             },
-            body: JSON.stringify({
-                url: tab.url
-            })
+            body: JSON.stringify({ url: tab.url })
         });
 
         if (!res.ok) return;
@@ -45,7 +37,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 });
 
 
-// ===== SIGNAL HANDLER (SINGLE CLEAN LISTENER) =====
+// ===== SIGNAL HANDLER =====
 chrome.runtime.onMessage.addListener(async (msg, sender) => {
 
     if (!sender.tab || !sender.tab.url) return;
@@ -53,59 +45,29 @@ chrome.runtime.onMessage.addListener(async (msg, sender) => {
     const tabId = sender.tab.id;
     const url = sender.tab.url;
 
-    try {
+    if (msg.type === "CLOSE_TAB") {
+        chrome.tabs.remove(tabId);
+        return;
+    }
 
-        // ===== CLOSE TAB =====
-        if (msg.type === "CLOSE_TAB") {
-            chrome.tabs.remove(tabId);
-            return;
-        }
+    if (msg.type === "CREDENTIAL_SUBMIT" || msg.type === "DOMAIN_MISMATCH") {
 
-        // ===== HIGH RISK EVENTS (INSTANT BLOCK) =====
-        if (msg.type === "CREDENTIAL_SUBMIT") {
+        chrome.tabs.sendMessage(tabId, {
+            type: "SHOW_RESULT",
+            verdict: "Security threat detected",
+            risk: "High"
+        });
 
-            chrome.tabs.sendMessage(tabId, {
-                type: "SHOW_RESULT",
-                verdict: "Credential theft attempt detected",
-                risk: "High"
-            });
+        await sendSignal(url, msg.type.toLowerCase());
+        return;
+    }
 
-            await sendSignal(url, "credential_submit");
-            return;
-        }
-
-        if (msg.type === "DOMAIN_MISMATCH") {
-
-            chrome.tabs.sendMessage(tabId, {
-                type: "SHOW_RESULT",
-                verdict: "Form submitting to external domain",
-                risk: "High"
-            });
-
-            await sendSignal(url, "domain_mismatch");
-            return;
-        }
-
-        // ===== MEDIUM SIGNALS =====
-        if (msg.type === "HIDDEN_FORM") {
-            await sendSignal(url, "hidden_form");
-        }
-
-        if (msg.type === "SUSPICIOUS_IFRAME") {
-            await sendSignal(url, "iframe");
-        }
-
-        if (msg.type === "LOGIN_FORM_DETECTED") {
-            await sendSignal(url, "login_form");
-        }
-
-    } catch (err) {
-        console.error("Signal error:", err);
+    if (["HIDDEN_FORM", "SUSPICIOUS_IFRAME", "LOGIN_FORM_DETECTED"].includes(msg.type)) {
+        await sendSignal(url, msg.type.toLowerCase());
     }
 });
 
 
-// ===== HELPER FUNCTION =====
 async function sendSignal(url, signal) {
     try {
         await fetch(API_URL, {
@@ -114,12 +76,7 @@ async function sendSignal(url, signal) {
                 "Content-Type": "application/json",
                 "x-api-key": API_KEY
             },
-            body: JSON.stringify({
-                url: url,
-                signal: signal
-            })
+            body: JSON.stringify({ url, signal })
         });
-    } catch (e) {
-        console.error("Signal send failed");
-    }
+    } catch {}
 }
