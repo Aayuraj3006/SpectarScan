@@ -33,7 +33,7 @@ app = FastAPI(title="SpecterScan Supreme")
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 
-# CORS (OK now since you have extension ID)
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["chrome-extension://mfnbcmbcmegajcidmgodikdonidhfggo"],
@@ -56,20 +56,15 @@ def load_models():
     try:
         if RF_PATH.exists():
             rf_model = joblib.load(RF_PATH)
-            logger.info(f"RF Model Loaded: {RF_PATH}")
+            logger.info("RF Model Loaded")
         if XGB_PATH.exists():
             xgb_model = joblib.load(XGB_PATH)
-            logger.info(f"XGB Model Loaded: {XGB_PATH}")
+            logger.info("XGB Model Loaded")
 
         rf_f = getattr(rf_model, "feature_names_in_", None)
         xgb_f = getattr(xgb_model, "feature_names_in_", None)
 
-        if rf_f is not None:
-            FEATURE_NAMES = rf_f
-        elif xgb_f is not None:
-            FEATURE_NAMES = xgb_f
-        else:
-            FEATURE_NAMES = [f"f{i}" for i in range(30)]
+        FEATURE_NAMES = rf_f or xgb_f or [f"f{i}" for i in range(30)]
 
     except Exception as e:
         logger.error(f"Model Load Error: {e}")
@@ -80,8 +75,14 @@ VT_KEY = os.getenv("VT_API_KEY")
 BACKEND_TOKEN = os.getenv("BACKEND_TOKEN")
 VT_CACHE = {}
 
+# ✅ UPDATED REQUEST MODEL
 class URLRequest(BaseModel):
     url: str
+    signal: str = None  # NEW (domain_mismatch, hidden_form, iframe)
+    has_login_form: bool = False
+    external_form_action: bool = False
+    external_scripts: int = 0
+
 
 def check_virustotal(url: str) -> int:
     if url in VT_CACHE:
@@ -93,6 +94,7 @@ def check_virustotal(url: str) -> int:
     try:
         url_id = base64.urlsafe_b64encode(url.encode()).decode().strip("=")
         headers = {"x-apikey": VT_KEY}
+
         resp = requests.get(
             f"https://www.virustotal.com/api/v3/urls/{url_id}",
             headers=headers,
@@ -100,7 +102,7 @@ def check_virustotal(url: str) -> int:
         )
 
         if resp.status_code == 200:
-            result = resp.json().get("data", {}).get("attributes", {}).get("last_analysis_stats", {}).get("malicious", 0)
+            result = resp.json()["data"]["attributes"]["last_analysis_stats"]["malicious"]
             VT_CACHE[url] = result
             return result
 
@@ -109,6 +111,7 @@ def check_virustotal(url: str) -> int:
 
     return 0
 
+
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_handler(request, exc):
     return JSONResponse(
@@ -116,11 +119,12 @@ async def rate_limit_handler(request, exc):
         content={"error": "Rate limit exceeded"}
     )
 
+
 @app.post("/predict")
 @limiter.limit("20/minute")
 async def predict(request: Request, body: URLRequest):
 
-    # ✅ TOKEN CHECK (CORRECT PLACE)
+    #  AUTH
     token = request.headers.get("x-api-key")
     if token != BACKEND_TOKEN:
         raise HTTPException(status_code=403, detail="Forbidden")
@@ -130,6 +134,7 @@ async def predict(request: Request, body: URLRequest):
 
     url = body.url.lower().strip()
 
+    # --- DATA ---
     impersonated = detect_clone(url)
     is_trusted = is_globally_trusted(url)
     live = get_domain_info(url)
@@ -142,54 +147,105 @@ async def predict(request: Request, body: URLRequest):
     xgb_prob = xgb_model.predict_proba(df)[0][1]
     ai_prob = (rf_prob + xgb_prob) / 2.0
 
-    is_phishing = False
-    verdict = "Legitimate"
-    risk_level = "Low"
-    final_score = ai_prob
+    # --- RISK ENGINE ---
+    risk_score = 0
+    reasons = []
 
-    if vt_hits >= 1:
-        verdict = f"Phishing (Flagged by {vt_hits} Security Engines)"
-        is_phishing = True
+    #  VirusTotal
+    if vt_hits >= 5:
+        risk_score += 70
+        reasons.append(f"Flagged by {vt_hits} engines")
+    elif vt_hits >= 1:
+        risk_score += 40
+        reasons.append("Suspicious reputation")
+
+    # Clone
+    if impersonated:
+        risk_score += 60
+        reasons.append(f"Impersonating {impersonated}")
+
+    #  Domain age
+    if live.get("age_days", 0) < 7:
+        risk_score += 40
+        reasons.append("Very new domain")
+
+    # SSL
+    if not live.get("is_ssl"):
+        risk_score += 20
+        reasons.append("No SSL")
+
+    #  AI
+    if ai_prob > 0.8:
+        risk_score += 40
+        reasons.append("High phishing pattern")
+    elif ai_prob > 0.5:
+        risk_score += 20
+        reasons.append("Suspicious pattern")
+
+    #  Behavior
+    if body.has_login_form:
+        risk_score += 25
+        reasons.append("Login form detected")
+
+    if body.external_form_action:
+        risk_score += 60
+        reasons.append("External form submission")
+
+    if body.external_scripts > 2:
+        risk_score += 20
+        reasons.append("Multiple external scripts")
+
+    #  Advanced signals
+    if body.signal == "domain_mismatch":
+        risk_score += 90
+        reasons.append("Form submits to different domain")
+
+    if body.signal == "hidden_form":
+        risk_score += 40
+        reasons.append("Hidden login form")
+
+    if body.signal == "iframe":
+        risk_score += 30
+        reasons.append("Suspicious iframe")
+
+    #  Trusted reduction (NOT override)
+    if is_trusted:
+        risk_score -= 20
+        reasons.append("Trusted domain")
+
+    # Clamp
+    risk_score = max(0, min(100, risk_score))
+
+    # --- FINAL ---
+    if risk_score >= 80:
+        verdict = "Dangerous website"
         risk_level = "High"
-
-    elif impersonated:
-        verdict = f"Phishing (Cloned {impersonated} Site Detected)"
         is_phishing = True
-        risk_level = "High"
-
-    elif is_trusted:
-        verdict = "Legitimate (Official Verified Domain)"
-        final_score = 0.01
-
-    elif live.get("age_days", 0) > 365 and live.get("is_ssl", False):
-        verdict = "Legitimate (Established Site)"
-        final_score = ai_prob * 0.1
-
-    elif ai_prob > 0.75:
-        verdict = "Phishing (AI Pattern Match)"
-        is_phishing = True
-        risk_level = "High"
-
-    elif ai_prob > 0.4:
-        verdict = "Suspicious (Unusual URL Pattern)"
+    elif risk_score >= 40:
+        verdict = "Suspicious website"
         risk_level = "Medium"
+        is_phishing = False
+    else:
+        verdict = "Safe website"
+        risk_level = "Low"
+        is_phishing = False
 
     return {
         "url": url,
         "verdict": verdict,
-        "is_phishing": is_phishing,
+        "risk_score": risk_score,
         "risk_level": risk_level,
-        "scores": {
-            "ai_certainty": f"{round(final_score * 100, 1)}%",
+        "is_phishing": is_phishing,
+        "reasons": reasons[:3],  # keep clean
+        "signals": {
+            "ai_probability": round(ai_prob, 2),
             "virus_total_hits": vt_hits,
-        },
-        "security_report": {
-            "domain_age": f"{live.get('age_days', 0)} days",
-            "ssl_active": live.get("is_ssl", False),
-            "registrar": live.get("registrar", "Unknown"),
+            "domain_age_days": live.get("age_days"),
+            "ssl_active": live.get("is_ssl"),
             "impersonating": impersonated
         }
     }
+
 
 if __name__ == "__main__":
     import uvicorn
