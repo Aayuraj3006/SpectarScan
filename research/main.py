@@ -72,6 +72,18 @@ def load_models():
 
         logger.info(" Models loaded successfully")
 
+        print("BASE_DIR:", BASE_DIR)
+        print("MODEL_DIR:", MODEL_DIR)
+
+        rf_path = MODEL_DIR / "phishing_random_forest.joblib"
+        xgb_path = MODEL_DIR / "phishing_xgboost.joblib"
+
+        print("RF path:", rf_path)
+        print("XGB path:", xgb_path)
+
+        print("RF exists:", rf_path.exists())
+        print("XGB exists:", xgb_path.exists())
+
     except Exception as e:
         logger.error(f"Model load failed: {e}")
 
