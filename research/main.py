@@ -232,3 +232,6 @@ async def predict(request: Request, body: URLRequest):
     except Exception as e:
         logger.error(f"Error: {e}")
         raise HTTPException(status_code=500, detail="Internal error")
+
+
+print("FINAL CLEAN VERSION RUNNING")
