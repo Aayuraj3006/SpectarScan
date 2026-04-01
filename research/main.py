@@ -51,7 +51,6 @@ MODEL_DIR = BASE_DIR / "models"
 
 def load_models():
     global rf_model, xgb_model, FEATURE_NAMES
-
     try:
         rf_path = MODEL_DIR / "phishing_random_forest.joblib"
         xgb_path = MODEL_DIR / "phishing_xgboost.joblib"
@@ -70,14 +69,20 @@ def load_models():
         rf_model = joblib.load(rf_path)
         xgb_model = joblib.load(xgb_path)
 
-        FEATURE_NAMES = getattr(rf_model, "feature_names_in_", None) or \
-                        getattr(xgb_model, "feature_names_in_", None) or \
-                        [f"f{i}" for i in range(30)]
+        # FIX: avoid truth value of array error
+        rf_features = getattr(rf_model, "feature_names_in_", None)
+        xgb_features = getattr(xgb_model, "feature_names_in_", None)
+        if rf_features is not None:
+            FEATURE_NAMES = list(rf_features)
+        elif xgb_features is not None:
+            FEATURE_NAMES = list(xgb_features)
+        else:
+            FEATURE_NAMES = [f"f{i}" for i in range(30)]
 
         logger.info("Models loaded successfully")
 
     except Exception as e:
-        logger.error(f" Model load failed: {e}")
+        logger.error(f"Model load failed: {e}")
 
 load_models()
 
@@ -93,7 +98,6 @@ class URLRequest(BaseModel):
     external_form_action: bool = False
     external_scripts: int = 0
 
-
 # ===== VIRUSTOTAL =====
 def check_virustotal(url: str) -> int:
     if url in VT_CACHE:
@@ -105,44 +109,33 @@ def check_virustotal(url: str) -> int:
     try:
         url_id = base64.urlsafe_b64encode(url.encode()).decode().strip("=")
         headers = {"x-apikey": VT_KEY}
-
-        resp = requests.get(
-            f"https://www.virustotal.com/api/v3/urls/{url_id}",
-            headers=headers,
-            timeout=3
-        )
+        resp = requests.get(f"https://www.virustotal.com/api/v3/urls/{url_id}", headers=headers, timeout=3)
 
         if resp.status_code == 200:
             result = resp.json().get("data", {}).get("attributes", {}).get("last_analysis_stats", {}).get("malicious", 0)
             VT_CACHE[url] = result
             return result
-
     except Exception as e:
         logger.error(f"VirusTotal error: {e}")
 
     return 0
 
-
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_handler(request, exc):
     return JSONResponse(status_code=429, content={"error": "Rate limit exceeded"})
-
 
 # ===== MAIN ENDPOINT =====
 @app.post("/predict")
 @limiter.limit("20/minute")
 async def predict(request: Request, body: URLRequest):
-
     try:
         # ===== AUTH =====
         token = request.headers.get("x-api-key")
-
         if not BACKEND_TOKEN:
-            logger.error(" BACKEND_TOKEN not set in environment")
+            logger.error("BACKEND_TOKEN not set in environment")
             raise HTTPException(status_code=500, detail="Server config error")
-
         if token != BACKEND_TOKEN:
-            logger.warning(f" Invalid token received: {token}")
+            logger.warning(f"Invalid token received: {token}")
             raise HTTPException(status_code=403, detail="Forbidden")
 
         # ===== MODEL CHECK =====
@@ -164,7 +157,6 @@ async def predict(request: Request, body: URLRequest):
             live = {"age_days": 0, "is_ssl": False}
 
         vt_hits = check_virustotal(url)
-
         feat = extract_features(url)
         df = pd.DataFrame([feat], columns=FEATURE_NAMES)
 
@@ -202,11 +194,9 @@ async def predict(request: Request, body: URLRequest):
         if body.has_login_form:
             risk_score += 25
             reasons.append("Login form detected")
-
         if body.external_form_action:
             risk_score += 60
             reasons.append("External form action")
-
         if body.external_scripts > 2:
             risk_score += 20
             reasons.append("Multiple external scripts")
@@ -215,15 +205,12 @@ async def predict(request: Request, body: URLRequest):
         if signal == "domain_mismatch":
             risk_score += 90
             reasons.append("Form domain mismatch")
-
         elif signal == "hidden_form":
             risk_score += 40
             reasons.append("Hidden login form")
-
         elif signal == "iframe":
             risk_score += 30
             reasons.append("Suspicious iframe")
-
         elif signal == "credential_submit":
             risk_score += 100
             reasons.append("Credential theft attempt")
@@ -266,11 +253,9 @@ async def predict(request: Request, body: URLRequest):
 
     except HTTPException:
         raise
-
     except Exception as e:
-        logger.error(f" Prediction failed: {e}")
+        logger.error(f"Prediction failed: {e}")
         raise HTTPException(status_code=500, detail="Internal processing error")
-
 
 if __name__ == "__main__":
     import uvicorn
