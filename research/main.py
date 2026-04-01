@@ -51,6 +51,7 @@ MODEL_DIR = BASE_DIR / "models"
 
 def load_models():
     global rf_model, xgb_model, FEATURE_NAMES
+
     try:
         rf_path = MODEL_DIR / "phishing_random_forest.joblib"
         xgb_path = MODEL_DIR / "phishing_xgboost.joblib"
@@ -69,15 +70,9 @@ def load_models():
         rf_model = joblib.load(rf_path)
         xgb_model = joblib.load(xgb_path)
 
-        # FIX: avoid truth value of array error
-        rf_features = getattr(rf_model, "feature_names_in_", None)
-        xgb_features = getattr(xgb_model, "feature_names_in_", None)
-        if rf_features is not None:
-            FEATURE_NAMES = list(rf_features)
-        elif xgb_features is not None:
-            FEATURE_NAMES = list(xgb_features)
-        else:
-            FEATURE_NAMES = [f"f{i}" for i in range(30)]
+        FEATURE_NAMES = getattr(rf_model, "feature_names_in_", None) or \
+                        getattr(xgb_model, "feature_names_in_", None) or \
+                        [f"f{i}" for i in range(30)]
 
         logger.info("Models loaded successfully")
 
@@ -109,12 +104,18 @@ def check_virustotal(url: str) -> int:
     try:
         url_id = base64.urlsafe_b64encode(url.encode()).decode().strip("=")
         headers = {"x-apikey": VT_KEY}
-        resp = requests.get(f"https://www.virustotal.com/api/v3/urls/{url_id}", headers=headers, timeout=3)
+
+        resp = requests.get(
+            f"https://www.virustotal.com/api/v3/urls/{url_id}",
+            headers=headers,
+            timeout=3
+        )
 
         if resp.status_code == 200:
             result = resp.json().get("data", {}).get("attributes", {}).get("last_analysis_stats", {}).get("malicious", 0)
             VT_CACHE[url] = result
             return result
+
     except Exception as e:
         logger.error(f"VirusTotal error: {e}")
 
@@ -128,6 +129,7 @@ async def rate_limit_handler(request, exc):
 @app.post("/predict")
 @limiter.limit("20/minute")
 async def predict(request: Request, body: URLRequest):
+
     try:
         # ===== AUTH =====
         token = request.headers.get("x-api-key")
@@ -146,7 +148,7 @@ async def predict(request: Request, body: URLRequest):
         url = body.url.lower().strip()
         signal = body.signal
 
-        # ===== DATA =====
+        # ===== DATA FEATURES =====
         impersonated = detect_clone(url)
         is_trusted = is_globally_trusted(url)
 
@@ -157,12 +159,26 @@ async def predict(request: Request, body: URLRequest):
             live = {"age_days": 0, "is_ssl": False}
 
         vt_hits = check_virustotal(url)
-        feat = extract_features(url)
-        df = pd.DataFrame([feat], columns=FEATURE_NAMES)
 
-        # ===== MODEL =====
-        rf_prob = rf_model.predict_proba(df)[0][1]
-        xgb_prob = xgb_model.predict_proba(df)[0][1]
+        # Extract features
+        feat = extract_features(url)
+        df = pd.DataFrame([feat])
+
+        # Align features with model
+        if FEATURE_NAMES:
+            for col in FEATURE_NAMES:
+                if col not in df.columns:
+                    df[col] = 0
+            df = df[FEATURE_NAMES]
+
+        # ===== MODEL PREDICTION =====
+        try:
+            rf_prob = rf_model.predict_proba(df)[0][1]
+            xgb_prob = xgb_model.predict_proba(df)[0][1]
+        except ValueError as e:
+            logger.error(f"Model prediction failed: {e}")
+            raise HTTPException(status_code=500, detail="Prediction failed due to feature mismatch")
+
         ai_prob = (rf_prob + xgb_prob) / 2
 
         # ===== RISK ENGINE =====
@@ -221,7 +237,7 @@ async def predict(request: Request, body: URLRequest):
 
         risk_score = max(0, min(100, risk_score))
 
-        # ===== FINAL =====
+        # ===== FINAL VERDICT =====
         if risk_score >= 80:
             verdict = "Dangerous Website"
             risk_level = "High"
@@ -253,6 +269,7 @@ async def predict(request: Request, body: URLRequest):
 
     except HTTPException:
         raise
+
     except Exception as e:
         logger.error(f"Prediction failed: {e}")
         raise HTTPException(status_code=500, detail="Internal processing error")
