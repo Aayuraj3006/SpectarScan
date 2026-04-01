@@ -56,8 +56,6 @@ def load_models():
         rf_path = MODEL_DIR / "phishing_random_forest.joblib"
         xgb_path = MODEL_DIR / "phishing_xgboost.joblib"
 
-        print("BASE_DIR:", BASE_DIR)
-        print("MODEL_DIR:", MODEL_DIR)
         print("RF exists:", rf_path.exists())
         print("XGB exists:", xgb_path.exists())
 
@@ -68,7 +66,7 @@ def load_models():
         rf_model = joblib.load(rf_path)
         xgb_model = joblib.load(xgb_path)
 
-        # ✅ FIXED FEATURE_NAMES LOGIC
+        # FIXED FEATURE NAMES
         FEATURE_NAMES = getattr(rf_model, "feature_names_in_", None)
 
         if FEATURE_NAMES is None:
@@ -79,7 +77,7 @@ def load_models():
         else:
             FEATURE_NAMES = list(FEATURE_NAMES)
 
-        logger.info("Models loaded successfully")
+        logger.info(f"Models loaded. Features: {len(FEATURE_NAMES)}")
 
     except Exception as e:
         logger.error(f"Model load failed: {e}")
@@ -117,7 +115,7 @@ def check_virustotal(url: str) -> int:
         )
 
         if resp.status_code == 200:
-            result = resp.json().get("data", {}).get("attributes", {}).get("last_analysis_stats", {}).get("malicious", 0)
+            result = resp.json()["data"]["attributes"]["last_analysis_stats"]["malicious"]
             VT_CACHE[url] = result
             return result
 
@@ -161,15 +159,15 @@ async def predict(request: Request, body: URLRequest):
 
         vt_hits = check_virustotal(url)
 
-        feat = extract_features(url)
-        df = pd.DataFrame([feat])
+        # EXTRACT FEATURES
+        df = pd.DataFrame([extract_features(url)])
 
-        # ✅ SAFE FEATURE ALIGNMENT
-        if FEATURE_NAMES is not None:
-            for col in FEATURE_NAMES:
-                if col not in df.columns:
-                    df[col] = 0
-            df = df[FEATURE_NAMES]
+        # ✅ CRITICAL FIX: FORCE ALIGNMENT
+        df = df.reindex(columns=FEATURE_NAMES, fill_value=0)
+
+        # DEBUG (optional, remove later)
+        print("Expected:", len(FEATURE_NAMES))
+        print("Actual:", len(df.columns))
 
         # PREDICTION
         try:
@@ -220,7 +218,6 @@ async def predict(request: Request, body: URLRequest):
 
         if signal == "domain_mismatch":
             risk_score += 90
-            reasons.append("Form domain mismatch")
         elif signal == "hidden_form":
             risk_score += 40
         elif signal == "iframe":
