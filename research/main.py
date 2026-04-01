@@ -49,18 +49,22 @@ FEATURE_NAMES = None
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_DIR = BASE_DIR / "research" / "models"
 
-
 def load_models():
     global rf_model, xgb_model, FEATURE_NAMES
+
     try:
         rf_path = MODEL_DIR / "phishing_random_forest.joblib"
         xgb_path = MODEL_DIR / "phishing_xgboost.joblib"
 
-        logger.info(f"Looking for models at: {rf_path}")
-        logger.info(f"Looking for models at: {xgb_path}")
+        print("BASE_DIR:", BASE_DIR)
+        print("MODEL_DIR:", MODEL_DIR)
+        print("RF path:", rf_path)
+        print("XGB path:", xgb_path)
+        print("RF exists:", rf_path.exists())
+        print("XGB exists:", xgb_path.exists())
 
         if not rf_path.exists() or not xgb_path.exists():
-            logger.error(" Model files not found")
+            logger.error("Model files not found")
             return
 
         rf_model = joblib.load(rf_path)
@@ -70,23 +74,10 @@ def load_models():
                         getattr(xgb_model, "feature_names_in_", None) or \
                         [f"f{i}" for i in range(30)]
 
-        logger.info(" Models loaded successfully")
-
-        print("BASE_DIR:", BASE_DIR)
-        print("MODEL_DIR:", MODEL_DIR)
-
-        rf_path = MODEL_DIR / "phishing_random_forest.joblib"
-        xgb_path = MODEL_DIR / "phishing_xgboost.joblib"
-
-        print("RF path:", rf_path)
-        print("XGB path:", xgb_path)
-
-        print("RF exists:", rf_path.exists())
-        print("XGB exists:", xgb_path.exists())
+        logger.info("Models loaded successfully")
 
     except Exception as e:
-        logger.error(f"Model load failed: {e}")
-
+        logger.error(f" Model load failed: {e}")
 
 load_models()
 
