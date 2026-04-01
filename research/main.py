@@ -29,9 +29,11 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="SpecterScan Supreme")
 
+# Rate limiter
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -45,7 +47,7 @@ xgb_model = None
 FEATURE_NAMES = None
 
 BASE_DIR = Path(__file__).resolve().parent
-MODEL_DIR = BASE_DIR / "models"
+MODEL_DIR = BASE_DIR / "research" / "models"
 
 
 def load_models():
@@ -54,8 +56,11 @@ def load_models():
         rf_path = MODEL_DIR / "phishing_random_forest.joblib"
         xgb_path = MODEL_DIR / "phishing_xgboost.joblib"
 
+        logger.info(f"Looking for models at: {rf_path}")
+        logger.info(f"Looking for models at: {xgb_path}")
+
         if not rf_path.exists() or not xgb_path.exists():
-            logger.error("Model files missing")
+            logger.error(" Model files not found")
             return
 
         rf_model = joblib.load(rf_path)
@@ -65,7 +70,7 @@ def load_models():
                         getattr(xgb_model, "feature_names_in_", None) or \
                         [f"f{i}" for i in range(30)]
 
-        logger.info("Models loaded successfully")
+        logger.info(" Models loaded successfully")
 
     except Exception as e:
         logger.error(f"Model load failed: {e}")
@@ -126,12 +131,20 @@ async def rate_limit_handler(request, exc):
 async def predict(request: Request, body: URLRequest):
 
     try:
-        # AUTH
+        # ===== AUTH =====
         token = request.headers.get("x-api-key")
+
+        if not BACKEND_TOKEN:
+            logger.error(" BACKEND_TOKEN not set in environment")
+            raise HTTPException(status_code=500, detail="Server config error")
+
         if token != BACKEND_TOKEN:
+            logger.warning(f" Invalid token received: {token}")
             raise HTTPException(status_code=403, detail="Forbidden")
 
+        # ===== MODEL CHECK =====
         if rf_model is None or xgb_model is None:
+            logger.error("Models not loaded")
             raise HTTPException(status_code=503, detail="Models not loaded")
 
         url = body.url.lower().strip()
@@ -152,14 +165,10 @@ async def predict(request: Request, body: URLRequest):
         feat = extract_features(url)
         df = pd.DataFrame([feat], columns=FEATURE_NAMES)
 
-        # ===== MODEL PREDICTION =====
-        try:
-            rf_prob = rf_model.predict_proba(df)[0][1]
-            xgb_prob = xgb_model.predict_proba(df)[0][1]
-            ai_prob = (rf_prob + xgb_prob) / 2
-        except Exception as e:
-            logger.error(f"Model prediction failed: {e}")
-            raise HTTPException(status_code=500, detail="Model inference error")
+        # ===== MODEL =====
+        rf_prob = rf_model.predict_proba(df)[0][1]
+        xgb_prob = xgb_model.predict_proba(df)[0][1]
+        ai_prob = (rf_prob + xgb_prob) / 2
 
         # ===== RISK ENGINE =====
         risk_score = 0
@@ -186,7 +195,7 @@ async def predict(request: Request, body: URLRequest):
 
         risk_score += ai_prob * 40
 
-        # BEHAVIOR
+        # Behavior
         if body.has_login_form:
             risk_score += 25
             reasons.append("Login form detected")
@@ -199,7 +208,7 @@ async def predict(request: Request, body: URLRequest):
             risk_score += 20
             reasons.append("Multiple external scripts")
 
-        # SIGNALS
+        # Signals
         if signal == "domain_mismatch":
             risk_score += 90
             reasons.append("Form domain mismatch")
@@ -216,7 +225,7 @@ async def predict(request: Request, body: URLRequest):
             risk_score += 100
             reasons.append("Credential theft attempt")
 
-        # TRUST REDUCTION
+        # Trusted reduction
         if is_trusted:
             risk_score -= 20
 
@@ -256,12 +265,10 @@ async def predict(request: Request, body: URLRequest):
         raise
 
     except Exception as e:
-        logger.error(f"Prediction failed: {e}")
+        logger.error(f" Prediction failed: {e}")
         raise HTTPException(status_code=500, detail="Internal processing error")
 
-print("HEADERS:", request.headers)
-print("RECEIVED TOKEN:", request.headers.get("x-api-key"))
-print("EXPECTED TOKEN:", BACKEND_TOKEN)
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
