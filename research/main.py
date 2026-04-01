@@ -58,8 +58,6 @@ def load_models():
 
         print("BASE_DIR:", BASE_DIR)
         print("MODEL_DIR:", MODEL_DIR)
-        print("RF path:", rf_path)
-        print("XGB path:", xgb_path)
         print("RF exists:", rf_path.exists())
         print("XGB exists:", xgb_path.exists())
 
@@ -70,9 +68,16 @@ def load_models():
         rf_model = joblib.load(rf_path)
         xgb_model = joblib.load(xgb_path)
 
-        FEATURE_NAMES = getattr(rf_model, "feature_names_in_", None) or \
-                        getattr(xgb_model, "feature_names_in_", None) or \
-                        [f"f{i}" for i in range(30)]
+        # ✅ FIXED FEATURE_NAMES LOGIC
+        FEATURE_NAMES = getattr(rf_model, "feature_names_in_", None)
+
+        if FEATURE_NAMES is None:
+            FEATURE_NAMES = getattr(xgb_model, "feature_names_in_", None)
+
+        if FEATURE_NAMES is None:
+            FEATURE_NAMES = [f"f{i}" for i in range(30)]
+        else:
+            FEATURE_NAMES = list(FEATURE_NAMES)
 
         logger.info("Models loaded successfully")
 
@@ -131,57 +136,52 @@ async def rate_limit_handler(request, exc):
 async def predict(request: Request, body: URLRequest):
 
     try:
-        # ===== AUTH =====
+        # AUTH
         token = request.headers.get("x-api-key")
         if not BACKEND_TOKEN:
-            logger.error("BACKEND_TOKEN not set in environment")
             raise HTTPException(status_code=500, detail="Server config error")
         if token != BACKEND_TOKEN:
-            logger.warning(f"Invalid token received: {token}")
             raise HTTPException(status_code=403, detail="Forbidden")
 
-        # ===== MODEL CHECK =====
+        # MODEL CHECK
         if rf_model is None or xgb_model is None:
-            logger.error("Models not loaded")
             raise HTTPException(status_code=503, detail="Models not loaded")
 
         url = body.url.lower().strip()
         signal = body.signal
 
-        # ===== DATA FEATURES =====
+        # FEATURES
         impersonated = detect_clone(url)
         is_trusted = is_globally_trusted(url)
 
         try:
             live = get_domain_info(url)
-        except Exception as e:
-            logger.error(f"Domain info failed: {e}")
+        except Exception:
             live = {"age_days": 0, "is_ssl": False}
 
         vt_hits = check_virustotal(url)
 
-        # Extract features
         feat = extract_features(url)
         df = pd.DataFrame([feat])
 
-        # Align features with model
-        if FEATURE_NAMES:
+        # ✅ SAFE FEATURE ALIGNMENT
+        if FEATURE_NAMES is not None:
             for col in FEATURE_NAMES:
                 if col not in df.columns:
                     df[col] = 0
             df = df[FEATURE_NAMES]
 
-        # ===== MODEL PREDICTION =====
+        # PREDICTION
         try:
             rf_prob = rf_model.predict_proba(df)[0][1]
             xgb_prob = xgb_model.predict_proba(df)[0][1]
-        except ValueError as e:
-            logger.error(f"Model prediction failed: {e}")
-            raise HTTPException(status_code=500, detail="Prediction failed due to feature mismatch")
+        except Exception as e:
+            logger.error(f"Prediction failed: {e}")
+            raise HTTPException(status_code=500, detail="Prediction error")
 
         ai_prob = (rf_prob + xgb_prob) / 2
 
-        # ===== RISK ENGINE =====
+        # RISK ENGINE
         risk_score = 0
         reasons = []
 
@@ -206,38 +206,33 @@ async def predict(request: Request, body: URLRequest):
 
         risk_score += ai_prob * 40
 
-        # Behavior
         if body.has_login_form:
             risk_score += 25
             reasons.append("Login form detected")
+
         if body.external_form_action:
             risk_score += 60
             reasons.append("External form action")
+
         if body.external_scripts > 2:
             risk_score += 20
             reasons.append("Multiple external scripts")
 
-        # Signals
         if signal == "domain_mismatch":
             risk_score += 90
             reasons.append("Form domain mismatch")
         elif signal == "hidden_form":
             risk_score += 40
-            reasons.append("Hidden login form")
         elif signal == "iframe":
             risk_score += 30
-            reasons.append("Suspicious iframe")
         elif signal == "credential_submit":
             risk_score += 100
-            reasons.append("Credential theft attempt")
 
-        # Trusted reduction
         if is_trusted:
             risk_score -= 20
 
         risk_score = max(0, min(100, risk_score))
 
-        # ===== FINAL VERDICT =====
         if risk_score >= 80:
             verdict = "Dangerous Website"
             risk_level = "High"
@@ -269,7 +264,6 @@ async def predict(request: Request, body: URLRequest):
 
     except HTTPException:
         raise
-
     except Exception as e:
         logger.error(f"Prediction failed: {e}")
         raise HTTPException(status_code=500, detail="Internal processing error")
