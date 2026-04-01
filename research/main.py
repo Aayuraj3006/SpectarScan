@@ -47,7 +47,7 @@ xgb_model = None
 FEATURE_NAMES = None
 
 BASE_DIR = Path(__file__).resolve().parent
-MODEL_DIR = BASE_DIR / "research" / "models"
+MODEL_DIR = BASE_DIR / "models"
 
 def load_models():
     global rf_model, xgb_model, FEATURE_NAMES
