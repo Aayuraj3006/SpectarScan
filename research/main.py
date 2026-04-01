@@ -259,7 +259,9 @@ async def predict(request: Request, body: URLRequest):
         logger.error(f"Prediction failed: {e}")
         raise HTTPException(status_code=500, detail="Internal processing error")
 
-
+print("HEADERS:", request.headers)
+print("RECEIVED TOKEN:", request.headers.get("x-api-key"))
+print("EXPECTED TOKEN:", BACKEND_TOKEN)
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
