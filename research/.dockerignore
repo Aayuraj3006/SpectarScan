@@ -3,5 +3,17 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-*.env
+.env
+
+# ML stuff (not needed anymore)
+models/
 data/
+train_ensemble.py
+
+# Git + system
+.git
+.gitignore
+
+# OS junk
+.DS_Store
+Thumbs.db
