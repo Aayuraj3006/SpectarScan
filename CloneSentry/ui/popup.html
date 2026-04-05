@@ -1,136 +1,46 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <meta charset="UTF-8">
     <style>
-        body { 
-            width: 320px; 
-            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; 
-            margin: 0; 
-            background-color: #f9f9f9; 
-            color: #333; 
-        }
-
-        .header { 
-            background: #2c3e50; 
-            color: white; 
-            padding: 15px; 
-            text-align: center; 
-            font-size: 16px; 
-            font-weight: 600;
-            letter-spacing: 0.5px;
-        }
-
-        .container { padding: 15px; }
-        
-        .status-box { 
-            border-radius: 12px; 
-            padding: 20px; 
-            text-align: center; 
-            color: white; 
-            margin-bottom: 15px; 
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            transition: background 0.3s ease;
-        }
-
-        #verdict { font-size: 18px; font-weight: bold; margin: 0; }
-        #risk-lvl { font-size: 13px; opacity: 0.9; display: block; margin-top: 5px; }
-
-        .details-group {
-            background: white;
-            border-radius: 8px;
-            padding: 10px;
-            border: 1px solid #eee;
-            margin-bottom: 15px;
-        }
-
-        .info-row { 
-            display: flex; 
-            justify-content: space-between; 
-            padding: 8px 0;
-            font-size: 13px;
-            border-bottom: 1px solid #f1f1f1;
-        }
-
-        .info-row:last-child { border-bottom: none; }
-
+        body { width: 330px; font-family: 'Segoe UI', Tahoma, sans-serif; margin: 0; background: #f8f9fa; }
+        .header { background: #1a2a3a; color: white; padding: 15px; text-align: center; font-weight: bold; border-bottom: 3px solid #3498db; }
+        .container { padding: 20px; }
+        .status-card { border-radius: 10px; padding: 20px; text-align: center; color: white; background: #7f8c8d; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .status-card.safe { background: #27ae60 !important; }
+        .status-card.warning { background: #f39c12 !important; }
+        .status-card.danger { background: #c0392b !important; }
+        #verdict { font-size: 18px; font-weight: bold; margin: 0; text-transform: uppercase; }
+        .stats-box { background: white; border-radius: 8px; border: 1px solid #dee2e6; }
+        .stat-row { display: flex; justify-content: space-between; padding: 12px 15px; border-bottom: 1px solid #eee; font-size: 13px; }
+        .stat-row:last-child { border-bottom: none; }
         .label { color: #7f8c8d; font-weight: 500; }
-        .value { color: #2c3e50; font-weight: 600; }
-
-      
-        input { 
-            width: 100%; 
-            padding: 10px; 
-            border-radius: 6px; 
-            border: 1px solid #ccc;
-            font-size: 13px;
-            outline: none;
-        }
-
-        input:focus {
-            border-color: #3498db;
-        }
-
-        button { 
-            width: 100%; 
-            padding: 12px; 
-            background: #3498db; 
-            color: white; 
-            border: none; 
-            border-radius: 6px; 
-            cursor: pointer; 
-            font-size: 14px;
-            font-weight: 600;
-            transition: transform 0.1s, background 0.2s;
-        }
-
+        .value { font-weight: bold; color: #2c3e50; }
+        button { width: 100%; padding: 14px; background: #3498db; color: white; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; margin-top: 15px; }
         button:hover { background: #2980b9; }
-        button:active { transform: scale(0.98); }
-        button:disabled { background: #bdc3c7; cursor: not-allowed; }
-
-        .footer {
-            text-align: center;
-            font-size: 10px;
-            color: #bdc3c7;
-            margin-top: 10px;
-        }
     </style>
 </head>
-
 <body>
-    <div class="header">SpecterScan</div>
-    
+    <div class="header">SpecterScan Supreme</div>
     <div class="container">
-
-        <div id="status-card" class="status-box" style="background: #7f8c8d;">
-            <p id="verdict">Ready to Scan</p>
+        <div id="status-card" class="status-card">
+            <p id="verdict">Initializing...</p>
         </div>
-
-        <div class="details-group">
-            
-            <div class="info-row">
-                <span class="label">Threat Engines</span>
+        <div class="stats-box">
+            <div class="stat-row">
+                <span class="label">Security Engines</span>
                 <span id="vt-hits" class="value">-</span>
             </div>
-            <div class="info-row">
+            <div class="stat-row">
                 <span class="label">Domain Age</span>
                 <span id="age" class="value">-</span>
             </div>
-            <div class="info-row">
+            <div class="stat-row">
                 <span class="label">SSL Security</span>
                 <span id="ssl" class="value">-</span>
             </div>
         </div>
-
-    
-
-        <button id="scanBtn">Scan</button>
-        
-        <div class="footer">
-            Real-time Threat Detection • Privacy Safe
-        </div>
+        <button id="scanBtn">Scan Website</button>
     </div>
-
     <script src="popup.js"></script>
 </body>
 </html>

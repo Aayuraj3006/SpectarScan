@@ -1,35 +1,23 @@
 {
   "manifest_version": 3,
-  "name": "SpecterScan",
-  "version": "1.0",
-  "description": "AI-powered phishing protection with strict privacy.",
-
-  "permissions": [
-    "tabs",
-    "storage",
-    "scripting"
-  ],
-
-  "host_permissions": [
-    "https://spectarscan.onrender.com/*",
-    "<all_urls>"
-  ],
-
+  "name": "SpecterScan Supreme",
+  "version": "2.1",
+  "permissions": ["tabs", "storage", "scripting", "activeTab", "webNavigation"],
+  "host_permissions": ["https://spectarscan.onrender.com/*"],
   "background": {
     "service_worker": "background.js"
   },
-
   "action": {
     "default_popup": "ui/popup.html"
   },
-
   "icons": {
     "128": "icons/icon128.png"
   },
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content.js"]
+      "js": ["content.js"],
+      "run_at": "document_end"
     }
   ]
 }

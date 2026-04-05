@@ -1,145 +1,53 @@
-let warningInterval = null;
-
-function blockPage(verdict) {
-
-    if (document.getElementById("specter-overlay")) return;
-
-    const overlay = document.createElement("div");
-    overlay.id = "specter-overlay";
-
-    overlay.innerHTML = `
-        <div style="text-align:center; max-width:500px;">
-            <h1>⚠ Dangerous Website</h1>
-            <p>This site may steal your data.</p>
-            <p style="opacity:0.7;">${verdict}</p>
-
-            <div style="margin-top:20px;">
-                <button id="leave">Leave</button>
-                <button id="proceed">Proceed Anyway</button>
-            </div>
-        </div>
-    `;
-
-    overlay.style = `
-        position:fixed;
-        top:0;left:0;
-        width:100%;height:100%;
-        background:#111;
-        color:white;
-        z-index:999999;
-        display:flex;
-        align-items:center;
-        justify-content:center;
-    `;
-
-    document.body.innerHTML = "";
-    document.body.appendChild(overlay);
-
-    document.getElementById("leave").onclick = () => {
-        chrome.runtime.sendMessage({ type: "CLOSE_TAB" });
-    };
-
-    document.getElementById("proceed").onclick = () => {
-        overlay.remove();
-        location.reload();
-
-        warningInterval = setInterval(() => {
-            alert("Warning: You are on a dangerous website");
-        }, 15000);
-    };
-}
-
-
-// ===== MESSAGE LISTENER =====
 chrome.runtime.onMessage.addListener((msg) => {
+    if (msg.type === "AUTOSCAN_RESULT") {
+        showToast(msg.verdict, msg.isMalicious || msg.isNewDomain);
 
-    if (msg.type !== "SHOW_RESULT") return;
-
-    if (msg.risk === "High") {
-        blockPage(msg.verdict);
-    }
-
-    if (msg.risk === "Medium") {
-        showBanner("Suspicious website detected", "#f39c12");
+        if (msg.isMalicious || msg.isNewDomain) {
+            lockInputs(msg.isMalicious ? "DANGER" : "NEW");
+        }
     }
 });
 
+function lockInputs(reason) {
+    const inputs = document.querySelectorAll('input[type="password"], input[type="email"], input[type="text"]');
+    inputs.forEach(input => {
+        input.style.filter = "blur(10px)";
+        input.style.pointerEvents = "none";
+        input.style.transition = "filter 0.5s";
+    });
 
-function showBanner(text, color) {
-    const box = document.createElement("div");
-
-    box.innerText = text;
-
-    box.style = `
-        position:fixed;
-        bottom:20px;
-        right:20px;
-        background:${color};
-        color:white;
-        padding:10px;
-        border-radius:6px;
-        z-index:999999;
-    `;
-
-    document.body.appendChild(box);
-    setTimeout(() => box.remove(), 6000);
+    if (!document.getElementById("specter-unlock-btn")) {
+        const btn = document.createElement("button");
+        btn.id = "specter-unlock-btn";
+        btn.innerText = reason === "DANGER" ? " MALICIOUS SITE: UNLOCK AT OWN RISK" : "⚠️ NEW SITE: CLICK TO UNLOCK";
+        btn.style = "position:fixed; bottom:30px; right:30px; z-index:999999; padding:15px; border-radius:50px; background:#1a2a3a; color:white; font-weight:bold; cursor:pointer; border:2px solid #3498db; box-shadow: 0 4px 15px rgba(0,0,0,0.5);";
+        
+        btn.onclick = () => {
+            inputs.forEach(i => { i.style.filter = "none"; i.style.pointerEvents = "all"; });
+            btn.remove();
+        };
+        document.body.appendChild(btn);
+    }
 }
 
-
-// ===== DETECTION =====
-function detectLoginForm() {
-    document.querySelectorAll("form").forEach(form => {
-        if (form.querySelector("input[type='password']")) {
-            chrome.runtime.sendMessage({ type: "LOGIN_FORM_DETECTED" });
-        }
-    });
-}
-
-function detectFormMismatch() {
-    document.querySelectorAll("form").forEach(form => {
-        const action = form.action;
-        if (!action) return;
-
-        try {
-            const formURL = new URL(action, location.href);
-            if (formURL.hostname !== location.hostname) {
-                chrome.runtime.sendMessage({ type: "DOMAIN_MISMATCH" });
-            }
-        } catch {}
-    });
-}
-
-function detectHiddenForms() {
-    document.querySelectorAll("input[type='password']").forEach(el => {
-        const style = getComputedStyle(el);
-        if (style.display === "none" || style.visibility === "hidden") {
-            chrome.runtime.sendMessage({ type: "HIDDEN_FORM" });
-        }
-    });
-}
-
-function detectIframes() {
-    document.querySelectorAll("iframe").forEach(frame => {
-        try {
-            const src = new URL(frame.src);
-            if (src.hostname !== location.hostname) {
-                chrome.runtime.sendMessage({ type: "SUSPICIOUS_IFRAME" });
-            }
-        } catch {}
-    });
+function showToast(text, isThreat) {
+    const toast = document.createElement("div");
+    toast.style = `position:fixed; top:20px; right:20px; z-index:999999; background:${isThreat ? '#c0392b' : '#27ae60'}; color:white; padding:15px 25px; border-radius:8px; font-family:sans-serif; font-weight:bold; box-shadow:0 4px 12px rgba(0,0,0,0.3); transition: opacity 0.5s;`;
+    toast.innerText = text;
+    document.body.appendChild(toast);
+    setTimeout(() => {
+        toast.style.opacity = "0";
+        setTimeout(() => toast.remove(), 500);
+    }, 4000);
 }
 
 document.addEventListener("submit", (e) => {
-    if (e.target.querySelector("input[type='password']")) {
-        chrome.runtime.sendMessage({ type: "CREDENTIAL_SUBMIT" });
+    const actionUrl = new URL(e.target.action, window.location.origin);
+    if (actionUrl.hostname !== window.location.hostname) {
+        const safe = ["google.com", "facebook.com", "microsoft.com", "apple.com"];
+        if (!safe.some(d => actionUrl.hostname.includes(d))) {
+            e.preventDefault();
+            alert(" SECURITY ALERT: Form Hijack Blocked! This site is trying to send your data to an external server: " + actionUrl.hostname);
+        }
     }
 }, true);
-
-
-// Run detectors
-setTimeout(() => {
-    detectLoginForm();
-    detectFormMismatch();
-    detectHiddenForms();
-    detectIframes();
-}, 3000);
