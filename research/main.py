@@ -44,7 +44,7 @@ app.add_middleware(
 
 VT_KEY = os.getenv("VT_API_KEY")
 GSB_KEY = os.getenv("GSB_API_KEY")
-BACKEND_TOKEN = os.getenv("BACKEND_TOKEN")
+
 
 # ===== CACHE =====
 CACHE = {}
@@ -158,9 +158,6 @@ def check_gsb(url: str):
 @limiter.limit("20/minute")
 async def predict(request: Request, body: URLRequest):
 
-    token = request.headers.get("x-api-key")
-    if token != BACKEND_TOKEN:
-        raise HTTPException(status_code=403, detail="Forbidden")
 
     url = body.url.lower().strip()
 

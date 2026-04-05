@@ -28,8 +28,8 @@ function lockInputs(reason) {
 
         btn.innerText =
             reason === "DANGER"
-                ? "⚠️ MALICIOUS SITE — UNLOCK AT YOUR OWN RISK"
-                : "⚠️ SUSPICIOUS SITE — CLICK TO UNLOCK";
+                ? "MALICIOUS SITE — UNLOCK AT YOUR OWN RISK"
+                : " SUSPICIOUS SITE — CLICK TO UNLOCK";
 
         btn.style = `
             position:fixed;
@@ -109,7 +109,7 @@ document.addEventListener("submit", (e) => {
 
         if (!isSafe) {
             e.preventDefault();
-            alert("🚨 SECURITY ALERT: Form blocked! Data was being sent to: " + actionUrl.hostname);
+            alert("SpecterScan: Form Hijack Blocked! Data was being sent to:: " + actionUrl.hostname);
         }
     }
 }, true);
