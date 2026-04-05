@@ -75,33 +75,53 @@ class URLRequest(BaseModel):
 
 # ===== VIRUSTOTAL SCANNER =====
 def check_virustotal(url: str) -> int:
+    # 1. NORMALIZE: Remove spaces and trailing slashes
+    url = url.strip().rstrip('/')
+    
     cached = get_cache(f"vt:{url}")
     if cached is not None: return cached
 
-    if not VT_KEY: return 0
+    if not VT_KEY: 
+        logger.error("VT_API_KEY is missing from environment variables!")
+        return 0
+
+    # 2. ENCODE: VT v3 needs Base64 WITHOUT padding (=)
+    url_id = base64.urlsafe_b64encode(url.encode()).decode().strip("=")
+    headers = {"x-apikey": VT_KEY}
 
     try:
-        # Clean encoding for VT API v3
-        url_id = base64.urlsafe_b64encode(url.encode()).decode().replace("=", "")
-        headers = {"x-apikey": VT_KEY}
-
-        # Increased timeout to 10s for Render stability
+        # Try to get the report
         resp = requests.get(
             f"https://www.virustotal.com/api/v3/urls/{url_id}",
             headers=headers,
             timeout=10
         )
 
+        # 3. HANDLE 404: If not in database, request a scan
+        if resp.status_code == 404:
+            logger.info(f"URL not found in VT. Triggering fresh scan: {url}")
+            requests.post(
+                "https://www.virustotal.com/api/v3/urls",
+                data={"url": url},
+                headers=headers,
+                timeout=10
+            )
+            # Return 1 to flag it as 'Suspicious' so it doesn't look 'Safe'
+            return 1 
+
         if resp.status_code == 200:
             stats = resp.json().get("data", {}).get("attributes", {}).get("last_analysis_stats", {})
             hits = stats.get("malicious", 0)
-            # Cache the hits
-            ttl = TTL_MALICIOUS if hits > 0 else TTL_SAFE
-            set_cache(f"vt:{url}", hits, ttl)
+            set_cache(f"vt:{url}", hits, TTL_MALICIOUS if hits > 0 else TTL_SAFE)
             return hits
 
+        # 4. HANDLE AUTH ERROR: Check your Render Env Vars
+        if resp.status_code == 401:
+            logger.error("Invalid VT API Key! Check Render Dashboard.")
+
     except Exception as e:
-        logger.error(f"VT API Error: {e}")
+        logger.error(f"VT API Request failed: {e}")
+    
     return 0
 
 # ===== GOOGLE SAFE BROWSING =====
