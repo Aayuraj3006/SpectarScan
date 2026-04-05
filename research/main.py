@@ -12,7 +12,6 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
-# Local imports
 try:
     from .utils import is_globally_trusted, detect_clone
     from .scanner import get_domain_info
@@ -33,7 +32,7 @@ app.state.limiter = limiter
 
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_handler(request, exc):
-    return JSONResponse(status_code=429, content={"error": "Rate limit exceeded. Please wait."})
+    return JSONResponse(status_code=429, content={"error": "Rate limit exceeded"})
 
 # ===== CORS =====
 app.add_middleware(
@@ -47,16 +46,16 @@ VT_KEY = os.getenv("VT_API_KEY")
 GSB_KEY = os.getenv("GSB_API_KEY")
 BACKEND_TOKEN = os.getenv("BACKEND_TOKEN")
 
-# ===== ADVANCED CACHE =====
+# ===== CACHE =====
 CACHE = {}
-TTL_MALICIOUS = 3600      # 1 Hour
-TTL_SAFE = 86400         # 24 Hours
-TTL_DEFAULT = 300        # 5 Minutes
+TTL_MALICIOUS = 3600
+TTL_SAFE = 86400
+TTL_DEFAULT = 300
 
 def get_cache(key):
     if key in CACHE:
-        data, timestamp, ttl = CACHE[key]
-        if time.time() - timestamp < ttl:
+        data, ts, ttl = CACHE[key]
+        if time.time() - ts < ttl:
             return data
         del CACHE[key]
     return None
@@ -64,80 +63,76 @@ def get_cache(key):
 def set_cache(key, value, ttl=TTL_DEFAULT):
     CACHE[key] = (value, time.time(), ttl)
 
-# ===== REQUEST MODEL =====
+# ===== MODEL =====
 class URLRequest(BaseModel):
     url: str
-    signal: str | None = None
     has_login_form: bool = False
     external_form_action: bool = False
     external_scripts: int = 0
 
-# ===== VIRUSTOTAL SCANNER =====
-def check_virustotal(url: str) -> int:
-    # 1. Normalize and Encode
+# ===== VIRUSTOTAL =====
+def check_virustotal(url: str):
     url = url.strip().rstrip('/')
     url_id = base64.urlsafe_b64encode(url.encode()).decode().strip("=")
-    
-    cached = get_cache(f"vt:{url}")
-    if cached is not None: return cached
 
-    if not VT_KEY: 
-        logger.error("VT_API_KEY missing!")
-        return 0
+    cached = get_cache(f"vt:{url}")
+    if cached is not None:
+        return cached
+
+    if not VT_KEY:
+        return None
 
     headers = {"x-apikey": VT_KEY}
 
     try:
-        # 2. Check for existing report
         resp = requests.get(
             f"https://www.virustotal.com/api/v3/urls/{url_id}",
             headers=headers,
             timeout=10
         )
 
-        # 3. Handle 404 (Not in database)
+        # No data yet → NOT suspicious
         if resp.status_code == 404:
-            logger.info(f"Triggering fresh VT scan for: {url}")
             requests.post(
                 "https://www.virustotal.com/api/v3/urls",
                 data={"url": url},
                 headers=headers,
                 timeout=10
             )
-            # DO NOT CACHE YET - Scan is in progress
-            return 1 
+            return None
 
-        # 4. Handle 200 (Success)
         if resp.status_code == 200:
             data = resp.json().get("data", {}).get("attributes", {})
             stats = data.get("last_analysis_stats", {})
             hits = stats.get("malicious", 0)
-            
-            # ONLY CACHE IF SCAN IS FINISHED
-            total_engines = sum(stats.values())
-            if total_engines > 10: # Standard VT report has 60-90 engines
-                set_cache(f"vt:{url}", hits, TTL_MALICIOUS if hits > 0 else TTL_SAFE)
-            
+
+            total = sum(stats.values())
+            if total > 10:
+                set_cache(f"vt:{url}", hits,
+                          TTL_MALICIOUS if hits >= 5 else TTL_SAFE)
+
             return hits
 
     except Exception as e:
-        logger.error(f"VT API Error: {e}")
-    
-    return 0
+        logger.error(f"VT error: {e}")
+
+    return None
 
 # ===== GOOGLE SAFE BROWSING =====
-def check_gsb(url: str) -> bool:
-    url = url.strip()
+def check_gsb(url: str):
     cached = get_cache(f"gsb:{url}")
-    if cached is not None: return cached
+    if cached is not None:
+        return cached
 
-    if not GSB_KEY: return False
+    if not GSB_KEY:
+        return False
 
     endpoint = f"https://safebrowsing.googleapis.com/v4/threatMatches:find?key={GSB_KEY}"
+
     payload = {
         "client": {"clientId": "specterscan", "clientVersion": "1.0"},
         "threatInfo": {
-            "threatTypes": ["MALWARE", "SOCIAL_ENGINEERING", "UNWANTED_SOFTWARE"],
+            "threatTypes": ["MALWARE", "SOCIAL_ENGINEERING"],
             "platformTypes": ["ANY_PLATFORM"],
             "threatEntryTypes": ["URL"],
             "threatEntries": [{"url": url}]
@@ -147,109 +142,128 @@ def check_gsb(url: str) -> bool:
     try:
         resp = requests.post(endpoint, json=payload, timeout=10)
         flagged = resp.status_code == 200 and "matches" in resp.json()
-        set_cache(f"gsb:{url}", flagged, TTL_SAFE if not flagged else TTL_MALICIOUS)
+
+        set_cache(f"gsb:{url}", flagged,
+                  TTL_MALICIOUS if flagged else TTL_SAFE)
+
         return flagged
+
     except Exception as e:
-        logger.error(f"GSB Error: {e}")
+        logger.error(f"GSB error: {e}")
+
     return False
 
+# ===== MAIN API =====
 @app.post("/predict")
 @limiter.limit("20/minute")
 async def predict(request: Request, body: URLRequest):
-    try:
-        token = request.headers.get("x-api-key")
-        if token != BACKEND_TOKEN:
-            raise HTTPException(status_code=403, detail="Forbidden")
 
-        url = body.url.lower().strip()
-        
-        cached_res = get_cache(f"full:{url}")
-        if cached_res: return cached_res
+    token = request.headers.get("x-api-key")
+    if token != BACKEND_TOKEN:
+        raise HTTPException(status_code=403, detail="Forbidden")
 
-        impersonated = detect_clone(url)
-        is_trusted = is_globally_trusted(url)
-        live = get_domain_info(url)
-        vt_hits = check_virustotal(url)
-        gsb_flag = check_gsb(url)
+    url = body.url.lower().strip()
 
-        # ===== SENSITIVE RISK ENGINE =====
-        risk_score = 0
-        reasons = []
+    cached = get_cache(f"full:{url}")
+    if cached:
+        return cached
 
-        # VT Hits: Instant Danger at 3+, Suspicious at 1
-        if vt_hits >= 3:
-            risk_score += 85
-            reasons.append(f"Security Engine Alert ({vt_hits} flags)")
-        elif vt_hits >= 1:
-            risk_score += 45
-            reasons.append("Potential malicious signals detected")
+    # ===== SIGNALS =====
+    vt_hits = check_virustotal(url)
+    gsb_flag = check_gsb(url)
+    live = get_domain_info(url)
 
-        if gsb_flag:
-            risk_score += 90
-            reasons.append("Blacklisted by Google Safe Browsing")
+    is_trusted = is_globally_trusted(url)
+    impersonated = detect_clone(url)
 
-        age = live.get("age_days", 0)
-        if age == 1:
-            risk_score += 55 # High enough for Yellow
-            reasons.append("Very new domain (less than 24h)")
-        elif 0 < age < 7:
-            risk_score += 30
-            reasons.append("Recently registered domain")
+    # ===== SCORING =====
+    risk = 0
+    reasons = []
 
-        if impersonated:
-            risk_score += 70
-            reasons.append(f"Possible spoofing of {impersonated}")
-        
-        if not live.get("is_ssl") and not url.startswith("https"):
-            risk_score += 35
-            reasons.append("Connection is not secure (HTTP)")
+    # --- Google Safe Browsing (strongest)
+    if gsb_flag:
+        risk += 90
+        reasons.append("Blacklisted by Google Safe Browsing")
 
-        if live.get("is_ip_hosting"):
-            risk_score += 45
-            reasons.append("Hosted on IP address, not domain")
+    # --- VirusTotal (normalized)
+    if vt_hits is not None:
+        if vt_hits >= 8:
+            risk += 60
+            reasons.append(f"Multiple security engines flagged ({vt_hits})")
+        elif vt_hits >= 3:
+            risk += 30
+            reasons.append("Some engines reported suspicious activity")
 
-        if body.external_form_action:
-            risk_score += 65
-            reasons.append("Form data sent to external host")
+    # --- Domain age (reduced impact)
+    age = live.get("age_days", 0)
+    if age == 0:
+        risk += 25
+        reasons.append("Very new domain")
+    elif age < 7:
+        risk += 15
+        reasons.append("Recently registered domain")
 
-        # Trust Override (Disabled if VT hits are present)
-        if is_trusted and vt_hits == 0:
-            risk_score = 0
-            reasons = []
+    # --- SSL
+    if not live.get("is_ssl"):
+        risk += 20
+        reasons.append("No SSL certificate")
 
-        risk_score = max(0, min(100, risk_score))
+    # --- IP hosting
+    if live.get("is_ip_hosting"):
+        risk += 25
+        reasons.append("Hosted on raw IP")
 
-        # Adjusted Thresholds for more responsive UI
-        if risk_score >= 70:
-            verdict = "Dangerous"
-        elif risk_score >= 35:
-            verdict = "Suspicious"
-        else:
-            verdict = "Safe"
+    # --- Phishing signals
+    if body.external_form_action:
+        risk += 40
+        reasons.append("Form submits to external domain")
 
-        response_data = {
-            "url": url,
-            "verdict": verdict,
-            "risk_score": risk_score,
-            "reasons": reasons[:3],
-            "signals": {
-                "vt_hits": vt_hits,
-                "gsb_flag": gsb_flag,
-                "domain_age": age,
-                "ssl": live.get("is_ssl")
-            }
+    if impersonated:
+        risk += 60
+        reasons.append(f"Impersonating {impersonated}")
+
+    # --- TRUST OVERRIDE (important)
+    if is_trusted:
+        risk = min(risk, 20)
+
+    # Clamp
+    risk = max(0, min(100, risk))
+
+    # ===== VERDICT =====
+    if gsb_flag:
+        verdict = "Dangerous"
+    elif risk >= 65:
+        verdict = "Dangerous"
+    elif risk >= 30:
+        verdict = "Suspicious"
+    elif vt_hits is None:
+        verdict = "Unknown"
+    else:
+        verdict = "Safe"
+
+    result = {
+        "url": url,
+        "verdict": verdict,
+        "risk_score": risk,
+        "reasons": reasons[:3],
+        "signals": {
+            "vt_hits": vt_hits,
+            "gsb_flag": gsb_flag,
+            "domain_age": age,
+            "ssl": live.get("is_ssl")
         }
+    }
 
-        # Only cache finished results
-        if vt_hits != 1: 
-            set_cache(f"full:{url}", response_data, TTL_SAFE if risk_score < 35 else TTL_MALICIOUS)
+    # Cache properly
+    set_cache(
+        f"full:{url}",
+        result,
+        TTL_SAFE if verdict in ["Safe", "Unknown"] else TTL_MALICIOUS
+    )
 
-        return response_data
+    return result
 
-    except Exception as e:
-        logger.error(f"Predict Error: {e}")
-        raise HTTPException(status_code=500, detail="Processing error")
-
+# ===== RUN =====
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
