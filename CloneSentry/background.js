@@ -1,106 +1,157 @@
 const API_URL = "https://spectarscan.onrender.com/predict";
+const scannedTabs = new Map();
 
-// SINGLE SOURCE OF TRUTH → USE BACKEND VERDICT
+// ===== Fetch with timeout =====
+async function fetchWithTimeout(url, options = {}, timeout = 5000) {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeout);
+
+    try {
+        const res = await fetch(url, {
+            ...options,
+            signal: controller.signal
+        });
+        clearTimeout(id);
+        return res;
+    } catch (err) {
+        clearTimeout(id);
+        throw err;
+    }
+}
+
+// ===== Risk evaluation (FIXED) =====
 function evaluateRisk(data) {
-    const vtHits = data.signals?.vt_hits ?? null;
-    const age = data.signals?.domain_age ?? 0;
+    const vtHits = data.signals?.vt_hits ?? 0;
+    const age = data.signals?.domain_age;
     const ssl = data.signals?.ssl ?? false;
 
-    let status = "SAFE";
-    let message = "Site is Legitimate";
+    let risk = 0;
 
+    // --- Domain age (weak signal) ---
+    let isNewDomain = false;
+    if (age !== undefined && age !== null) {
+        if (age < 3) {
+            risk += 40;
+            isNewDomain = true;
+        } else if (age < 30) {
+            risk += 25;
+            isNewDomain = true;
+        } else if (age < 180) {
+            risk += 10;
+        }
+    }
+
+    // --- VirusTotal hits (strong signal) ---
+    if (vtHits > 0) {
+        risk += vtHits * 20;
+    }
+
+    // --- SSL (very weak signal) ---
+    if (!ssl) {
+        risk += 5;
+    }
+
+    // --- API verdict ---
     if (data.verdict === "Dangerous") {
+        risk += 80;
+    } else if (data.verdict === "Suspicious") {
+        risk += 40;
+    }
+
+    // ===== Final classification =====
+    let status = "SAFE";
+    let message = "Site appears safe";
+
+    if (risk >= 80) {
         status = "DANGER";
         message = "Malicious Website Detected";
-    } else if (data.verdict === "Suspicious") {
+    } else if (risk >= 40) {
         status = "WARNING";
         message = "Suspicious Website";
-    } else if (data.verdict === "Unknown") {
-        status = "WARNING";
-        message = "Unknown / Unverified Website";
+    } else if (risk >= 15) {
+        status = "LOW";
+        message = "Low Trust (New or Unverified Site)";
     }
 
     return {
         status,
         message,
+        risk,
         vtHits,
-        age,
+        age: age ?? null,
         ssl,
         isMalicious: status === "DANGER",
-        isNew: status === "WARNING"
+        isSuspicious: status === "WARNING",
+        isLowTrust: status === "LOW",
+        isNewDomain
     };
 }
 
-// ===== MANUAL SCAN =====
+// ===== Manual scan =====
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "PERFORM_SCAN") {
-        fetch(API_URL, {
+        fetchWithTimeout(API_URL, {
             method: "POST",
-            headers: { 
-                "Content-Type": "application/json",
-                "x-api-key": "b5BbVpPoOv3loryfGnwNNudc0jKTz_S5nxmx3nZfWz4" // ⚠️ REQUIRED
-            },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ url: request.url })
         })
         .then(res => res.json())
         .then(data => {
-            console.log("API RESPONSE:", data);
             const result = evaluateRisk(data);
             sendResponse({ success: true, result });
         })
-        .catch(err => {
-            console.error("Manual scan error:", err);
-            sendResponse({ success: false });
-        });
+        .catch(() => sendResponse({ success: false }));
 
         return true;
     }
 });
 
-// ===== AUTO SCAN (WITH CACHE) =====
-const scannedTabs = new Map();
-
+// ===== Auto scan =====
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-    if (changeInfo.status === 'complete' && tab.url?.startsWith('http')) {
+    if (changeInfo.status !== "complete" || !tab.url?.startsWith("http")) return;
+    if (scannedTabs.get(tabId) === tab.url) return;
 
-        if (scannedTabs.get(tabId) === tab.url) return;
-        scannedTabs.set(tabId, tab.url);
+    scannedTabs.set(tabId, tab.url);
 
-        try {
-            const res = await fetch(API_URL, {
-                method: "POST",
-                headers: { 
-                    "Content-Type": "application/json",
-                    "x-api-key": "b5BbVpPoOv3loryfGnwNNudc0jKTz_S5nxmx3nZfWz4"
-                },
-                body: JSON.stringify({ url: tab.url })
-            });
+    try {
+        const res = await fetchWithTimeout(API_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url: tab.url })
+        });
 
-            const data = await res.json();
-            console.log("AUTO API:", data);
+        const data = await res.json();
+        const result = evaluateRisk(data);
 
-            const result = evaluateRisk(data);
+        await chrome.scripting.executeScript({
+            target: { tabId },
+            files: ["content.js"]
+        }).catch(() => {});
 
-            sendResult(tabId, {
-                type: "AUTOSCAN_RESULT",
-                verdict: result.message,
-                isMalicious: result.isMalicious,
-                isNewDomain: result.isNew
-            });
+        safeSend(tabId, {
+            type: "AUTOSCAN_RESULT",
+            verdict: result.message,
+            isMalicious: result.isMalicious,
+            isSuspicious: result.isSuspicious,
+            isLowTrust: result.isLowTrust,
+            isNewDomain: result.isNewDomain
+        });
 
-        } catch (e) {
-            console.log("Auto-scan failed:", e);
-        }
+    } catch (e) {
+        console.error("Auto-scan failed:", e);
     }
 });
 
-// Retry send (fix timing issue)
-function sendResult(tabId, payload) {
+// ===== Safe send =====
+function safeSend(tabId, payload) {
     chrome.tabs.sendMessage(tabId, payload, () => {
         if (chrome.runtime.lastError) {
-            setTimeout(() => {
-                chrome.tabs.sendMessage(tabId, payload);
-            }, 500);
+            if (!chrome.runtime.lastError.message.includes("Could not establish connection")) {
+                console.warn(`sendMessage failed for tab ${tabId}:`, chrome.runtime.lastError.message);
+            }
         }
     });
 }
+
+// ===== Cleanup =====
+chrome.tabs.onRemoved.addListener(tabId => scannedTabs.delete(tabId));
